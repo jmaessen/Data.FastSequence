@@ -71,7 +71,7 @@ prop_length0 xs = (length sq == 0) == (null sq)
   where sq = fromList xs
 
 ------------------------------------------------------------
--- ** head, tail, init, last
+-- ** head, tail, viewl, init, last, viewr
 
 prop_head :: [Int] -> Bool
 prop_head [] = True
@@ -81,6 +81,12 @@ prop_tail :: [Int] -> Bool
 prop_tail [] = True
 prop_tail xs = P.tail xs == toList (check $ tail (fromList xs))
 
+prop_viewl :: [Int] -> Bool
+prop_viewl xs =
+  case viewl (fromList xs) of
+    EmptyL -> P.null xs
+    x :< s -> P.head xs == x && P.tail xs == toList s
+
 prop_init :: [Int] -> Bool
 prop_init [] = True
 prop_init xs = P.init xs == toList (init (fromList xs))
@@ -88,6 +94,12 @@ prop_init xs = P.init xs == toList (init (fromList xs))
 prop_last :: [Int] -> Bool
 prop_last [] = True
 prop_last xs = P.last xs == last (check $ fromList xs)
+
+prop_viewr :: [Int] -> Bool
+prop_viewr xs =
+  case viewr (fromList xs) of
+    EmptyR -> P.null xs
+    s :> x -> P.last xs == x && P.init xs == toList s
 
 ------------------------------------------------------------
 -- ** Equality and ordering
@@ -175,8 +187,10 @@ tests =
     testGroup "head, tail, init, last" [
       testProperty "head" prop_head,
       testProperty "tail" prop_tail,
+      testProperty "viewl" prop_viewl,
       testProperty "init" prop_init,
-      testProperty "last" prop_last
+      testProperty "last" prop_last,
+      testProperty "viewr" prop_viewr
     ],
     testGroup "Equality" [
       testProperty "reflexive" prop_reflexive,

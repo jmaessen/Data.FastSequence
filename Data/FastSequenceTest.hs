@@ -3,9 +3,9 @@
 -- | Tests for Data.FastSequence.  We test functions by comparing them to their list
 -- equivalents.
 
-module Main(main) where
+module Data.FastSequenceTest(main) where
 
-import Prelude hiding ( null, reverse, length, head, tail, init, last )
+import Prelude hiding ( null, reverse, length, head, tail, init, last, take, drop )
 import qualified Prelude as P
 import qualified Data.List as L
 import Data.FastSequence
@@ -134,8 +134,8 @@ prop_inits xs = L.inits xs == fmap (toList . check) (toList $ inits $ fromList x
 prop_tails :: [Int] -> Bool
 prop_tails xs = L.tails xs == fmap (toList . check) (toList $ tails $ fromList xs)
 
-prop_fmap :: [Int] -> Int -> Bool
-prop_fmap xs x = fmap (x+) xs == toList (check (fmap (x+) (fromList xs)))
+prop_fmap :: [Int] -> Blind (Int -> Int) -> Bool
+prop_fmap xs (Blind f) = fmap f xs == toList (check (fmap f (fromList xs)))
 
 ------------------------------------------------------------
 -- ** append, index, take, drop
@@ -144,6 +144,8 @@ prop_append :: [Int] -> [Int] -> Bool
 prop_append xs ys = (xs ++ ys) == toList (check (fromList xs >< fromList ys))
 
 -- Test cases where we're not creating intermediate results by consing.
+-- The big idea here is to create more complex internal tree structures
+-- and make sure those don't yield wrong results.
 prop_concat_fold2 :: [[Int]] -> Bool
 prop_concat_fold2 xss =
   concat xss == toList (check (fold2 (><) empty (fmap fromList xss)))
@@ -155,8 +157,34 @@ fold2 op e xs = fold2 op e (f2 xs)
   where f2 (a:b:xs) = op a b : f2 xs
         f2 xs = xs
 
-prop_index :: [Int] -> NonNegative Int -> Property
-prop_index xs (NonNegative i) = (i < length q) ==> ((xs!!i) == index q i)
+prop_take :: [Int] -> Bool
+prop_take xs =
+  and [ P.take i xs == toList (check (take i q)) | i <- [-1 .. length q+1] ]
+  where q = fromList xs
+
+prop_drop :: [Int] -> Bool
+prop_drop xs =
+  and [ P.drop i xs == toList (check (drop i q)) | i <- [-1 .. length q+1] ]
+  where q = fromList xs
+
+------------------------------------------------------------
+-- ** Element access
+prop_index :: [Int] -> Bool
+prop_index xs = and [(xs!!i) == index q i | i <- [0 .. length q - 1]]
+  where q = fromList xs
+
+prop_adjust :: Blind (Int -> Int) -> [Int] -> Bool
+prop_adjust (Blind f) xs =
+  and [(l ++ f e : r) == toList (check (adjust f i q)) |
+       i <- [0 .. length q - 1],
+       let (l, e : r) = splitAt i xs]
+  where q = fromList xs
+
+prop_update :: [Int] -> Int -> Bool
+prop_update xs v =
+  and [(l ++ v : r) == toList (check (update i v q)) |
+       i <- [0 .. length q - 1],
+       let (l, e : r) = splitAt i xs]
   where q = fromList xs
 
 ------------------------------------------------------------
@@ -209,7 +237,13 @@ tests =
     testGroup "append, take, drop" [
       testProperty "append" prop_append,
       testProperty "appends" prop_concat_fold2,
-      testProperty "index" prop_index
+      testProperty "take" prop_take,
+      testProperty "drop" prop_drop
+    ],
+    testGroup "Element access" [
+      testProperty "index" prop_index,
+      testProperty "adjust" prop_adjust,
+      testProperty "update" prop_update
     ]
   ]
 

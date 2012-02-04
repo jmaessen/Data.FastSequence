@@ -4,16 +4,17 @@ module Data.FastSequence(
     empty, singleton, (|>), (<|), fromList, toList, null, length,
     head, tail, init, last, ViewL(..), viewl, ViewR(..), viewr,
     reverse, tails, inits, (><),
-    index,
+    index, adjust, update, take, drop,
     pretty, pp, check
     ) where
-import Prelude hiding ( null, reverse, length, head, tail, init, last, foldr )
+import Prelude hiding ( null, reverse, length, head, tail, init, last, take, drop, foldr )
 import qualified Prelude as P
 import Data.List(foldl')
 import Data.Foldable(Foldable(..))
 import Data.Traversable(Traversable(..))
 import Data.Typeable(Typeable1(..))
 import qualified Data.Vector as N
+import Debug.Trace(trace)
 
 infixr 5 ><
 infixr 5 <|, :<
@@ -145,6 +146,10 @@ reverseN (Node s n) = Node s (N.reverse n)
 
 fromListN :: (Sized a) => [a] -> Node a
 fromListN xs = node (N.fromList xs)
+
+{-# INLINE adjustN #-}
+adjustN :: (a -> a) -> Breadth -> Node a -> Node a
+adjustN f i (Node s v) = Node s (v N.// [(i, f (v N.! i))])
 
 ------------------------------------------------------------
 -- Now a constructor for root
@@ -282,14 +287,17 @@ viewl' :: (Sized a) => FTree a -> TreeView a
 viewl' (Simple m)
   | nullN m = Empty
   | otherwise = View (headN m) (Simple (tailN m))
-viewl' (Root s l d r) =
-  View hn $
-    if breadth l > minFringe then Root (s - size hn) tn d r
-    else case viewl' d of
-           View l' d' -> Root (s - size hn) (appN tn l') d' r
-           Empty      -> Simple (appN tn r)
+viewl' (Root s l d r) = View hn (rootL (s - size hn) (tailN l) d r)
   where hn = headN l
-        tn = tailN l
+
+-- Create a Root node with a potentially undersized l
+rootL :: Size -> Node a -> FTree (Node a) -> Node a -> FTree a
+rootL s l d r
+  | breadth l >= minFringe = Root s l d r
+  | otherwise =
+    case viewl' d of
+      View l' d' -> Root s (appN l l') d' r
+      Empty      -> Simple (appN l r)
 
 head :: Seq a -> a
 head (Seq (Simple m))
@@ -317,14 +325,17 @@ viewr' :: (Sized a) => FTree a -> TreeView a
 viewr' (Simple m)
   | nullN m = Empty
   | otherwise = View (lastN m) (Simple (initN m))
-viewr' (Root s l d r) =
-  View ln $
-    if breadth r > minFringe then Root (s - size ln) l d nn
-    else case viewr' d of
-           View r' d' -> Root (s - size ln) l d' (appN r' nn)
-           Empty      -> Simple (appN l nn)
+viewr' (Root s l d r) = View ln (rootR (s - size ln) l d (initN r))
   where ln = lastN r
-        nn = initN r
+
+-- Create a Root node with a potentially undersized R
+rootR :: Size -> Node a -> FTree (Node a) -> Node a -> FTree a
+rootR s l d r
+  | breadth r >= minFringe = Root s l d r
+  | otherwise =
+    case viewr' d of
+      View r' d' -> Root s l d' (appN r' r)
+      Empty      -> Simple (appN l r)
 
 init :: Seq a -> Seq a
 init t =
@@ -341,10 +352,10 @@ last (Seq (Root s l d r)) = unElem (lastN r)
 ------------------------------------------------------------
 -- * Indexing and indexed operations
 
-index :: (Show a) => Seq a -> Int -> a
+index :: (Show a) => Seq a -> Size -> a
 index !m i | i < 0 = indexErr
 index (Seq (Simple m)) i | i < size m = unElem (datum m N.! i)
-index (Seq t@(Root s l d r)) i | i < s = unElem (fst (index' t i))
+index (Seq t@(Root s l d r)) i | i < s = unElem (snd (index' t i))
 index _ _ = indexErr
 
 indexErr :: a
@@ -355,12 +366,12 @@ indexErr = error "FastSequence.index: index out of bounds"
 -- we return not only the value indexed, but the residual
 -- index as well.  That way the caller (the third clause below)
 -- can then index into the resulting node.
-index' :: (Show a) => (Sized a) => FTree a -> Int -> (a, Int)
-index' (Simple m) i = indexN m i
+index' :: (Sized a) => FTree a -> Size -> (Size, a)
+index' (Simple m) i = indexN i m
 index' (Root s l d r) i
-  | i < sl = indexN l i
-  | i < sld = uncurry (indexN) (index' d (i - sl))
-  | otherwise = indexN r (i - sld)
+  | i < sl = indexN i l
+  | i < sld = uncurry indexN (index' d (i - sl))
+  | otherwise = indexN (i - sld) r
   where sl = size l
         sld = sl + size d
 
@@ -368,21 +379,128 @@ index' (Root s l d r) i
 -- case each element will cover multiple indices.  As a
 -- result we return the residual index, so the caller can
 -- index into the result if necessary.
-indexN :: (Show a) => (Sized a) => Node a -> Int -> (a, Int)
-indexN n@(Node s v) i = loop 0 i
+indexN :: (Sized a) => Size ->  Node a -> (Size, a)
+indexN i n@(Node s v) = loop 0 i
   where loop position i
-          | i < se = (e, i)
-          | position + 1 == breadth n = error ("indexN " ++ show n ++ " " ++ show i)
+          | i < se = (i, e)
+          | otherwise = loop (position + 1) (i - se)
+          where e = v N.! position
+                se = size e
+
+adjust :: (a -> a) -> Size -> Seq a -> Seq a
+adjust f i !m | i < 0 = adjustErr
+adjust f i (Seq (Simple m))
+  | i < size m = Seq (Simple (adjustN (Elem . f . unElem) i m))
+adjust f i (Seq t@(Root s l d r))
+  | i < s = Seq (adjust' (const (Elem . f . unElem)) i t)
+adjust f i m = adjustErr
+
+adjustErr :: a
+adjustErr = error "FastSequence.adjust: index out of bounds"
+
+-- We pass the "remaining" index into the adjustment function.
+-- This is important for upper levels of the tree, where the adjustment
+-- function is actually looking deeper in the current level.
+adjust' :: (Sized a) => (Size -> a -> a) -> Size -> FTree a -> FTree a
+adjust' f i (Simple m) = Simple (adjustN' f i m)
+adjust' f i (Root s l d r)
+  | i < sl = Root s (adjustN' f i l) d r
+  | i < sld = Root s l (adjust' (adjustN' f) (i - sl) d) r
+  | otherwise = Root s l d (adjustN' f (i - sld) r)
+  where sl = size l
+        sld = sl + size d
+
+adjustN' :: (Sized a) => (Size -> a -> a) -> Size -> Node a -> Node a
+adjustN' f i0 n@(Node s v) = loop 0 i0
+  where loop position i
+          | i < se = adjustN (f i) position n
+          | otherwise = loop (position + 1) (i - se)
+          where e = v N.! position
+                se = size e
+
+update :: Size -> a -> Seq a -> Seq a
+update i v !m | i < 0 || i >= length m = updateErr
+update i v m = adjust (const v) i m
+
+updateErr :: a
+updateErr = error "FastSequence.update: index out of bounds"
+
+take :: Size -> Seq a -> Seq a
+take i !sq | i <= 0 = empty
+take i sq@(Seq (Simple (Node s v)))
+  | i < s = Seq (Simple (Node i (N.take i v)))
+take i sq@(Seq t@(Root s l d r))
+  | i < s =
+    case take' i t of
+      (_, r, _) -> Seq r
+take i sq = sq
+
+-- Result is (remaining elements to drop, head without those elements,
+-- tail element from which elements may possibly be dropped).
+take' :: (Sized a) => Size -> FTree a -> (Size, FTree a, a)
+take' i (Simple m) = midSimple (takeN' i m)
+take' i (Root s l d r)
+  | i < sl = midSimple (takeN' i l)
+  | i < sld =
+    case take' (i - sl) d of
+      (i1, d1, r1) ->
+        case takeN' i1 r1 of
+          (i2, r2, u) -> (i2, rootR (i - i2) l d1 r2, u)
+  | otherwise =
+    case takeN' (i - sld) r of
+      (i', r, u) -> (i', rootR (i - i') l d r, u)
+  where sl = size l
+        sld = sl + size d
+
+midSimple :: (a, Node b, c) -> (a, FTree b, c)
+midSimple (a, m, c) = (a, Simple m, c)
+
+takeN' :: Sized a => Size -> Node a -> (Size, Node a, a)
+takeN' i0 n@(Node s v) = loop 0 i0
+  where loop position i
+          | i < se = (i, Node (i0 - i) (N.take position v), e)
+          | otherwise = loop (position + 1) (i - se)
+          where e = v N.! position
+                se = size e
+
+drop :: Size -> Seq a -> Seq a
+drop i sq | i <= 0 = sq
+drop i sq@(Seq (Simple (Node s v)))
+  | i < s = Seq (Simple (Node (s - i) (N.drop i v)))
+drop i sq@(Seq t@(Root s l d r))
+  | i < s =
+    case drop' i t of
+      (_, r, e) -> Seq (cons e r)
+drop i sq = empty
+
+-- Result is (remaining elements to drop, tail without leading
+-- elements, head element from which elements may possibly be
+-- dropped).
+drop' :: (Sized a) => Size -> FTree a -> (Size, FTree a, a)
+drop' i (Simple m) = midSimple (dropN' i m)
+drop' i (Root s l d r)
+  | i < sl =
+    case dropN' i l of
+      (i', l', u) -> (i', rootL (s - i + i' - size u) l' d r, u)
+  | i < sld =
+    case drop' (i - sl) d of
+      (i1, d1, l1) ->
+        case dropN' i1 l1 of
+          (i2, l2, u) -> (i2, rootL (s - i + i2 - size u) l2 d1 r, u)
+  | otherwise = midSimple (dropN' (i - sld) r)
+  where sl = size l
+        sld = sl + size d
+
+dropN' :: Sized a => Size -> Node a -> (Size, Node a, a)
+dropN' i0 n@(Node s v) = loop 0 i0
+  where loop position i
+          | i < se = (i, Node (s - i0 + i - se) (N.drop (position + 1) v), e)
           | otherwise = loop (position + 1) (i - se)
           where e = v N.! position
                 se = size e
 
 {-
-adjust :: (a -> a) -> Int -> Seq a -> Seq a
-update :: Int -> a -> Seq a -> Seq a
-take :: Int -> Seq a -> Seq a
-drop :: Int -> Seq a -> Seq a
-splitAt :: Int -> Seq a -> (Seq a, Seq a)
+splitAt :: Size -> Seq a -> (Seq a, Seq a)
 -}
 
 ------------------------------------------------------------
@@ -466,7 +584,7 @@ showN (Node s n) = "<" ++ show s ++ ">" ++ show (N.toList n)
 
 showNInner :: (a -> String) -> Node a -> String
 showNInner f (Node n s) =
-  "<" ++ show n ++ ">[" ++ drop 1 (N.foldr (\d r -> "," ++ f d ++ r) "" s) ++ "]"
+  "<" ++ show n ++ ">[" ++ P.drop 1 (N.foldr (\d r -> "," ++ f d ++ r) "" s) ++ "]"
 
 prettyf :: Show a => (Node a -> String) -> FTree a -> String
 prettyf f (Simple m) = "S " ++ f m

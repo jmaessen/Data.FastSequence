@@ -5,7 +5,7 @@
 
 module Data.FastSequenceTest(main) where
 
-import Prelude hiding ( null, reverse, length, head, tail, init, last, take, drop )
+import Prelude hiding ( null, reverse, length, head, tail, init, last, take, drop, splitAt )
 import qualified Prelude as P
 import qualified Data.List as L
 import Data.FastSequence
@@ -159,13 +159,19 @@ fold2 op e xs = fold2 op e (f2 xs)
 
 prop_take :: [Int] -> Bool
 prop_take xs =
-  and [ P.take i xs == toList (check (take i q)) | i <- [-1 .. length q+1] ]
+  and [ P.take i xs == toList (check (take i q)) | i <- [-1 .. length q + 1] ]
   where q = fromList xs
 
 prop_drop :: [Int] -> Bool
 prop_drop xs =
-  and [ P.drop i xs == toList (check (drop i q)) | i <- [-1 .. length q+1] ]
+  and [ P.drop i xs == toList (check (drop i q)) | i <- [-1 .. length q + 1] ]
   where q = fromList xs
+
+prop_splitAt :: [Int] -> Bool
+prop_splitAt xs =
+  and [ (take i q, drop i q) == check2 (splitAt i q) | i <- [-1 .. length q + 1] ]
+  where q = fromList xs
+        check2 (a,b) = (check a, check b)
 
 ------------------------------------------------------------
 -- ** Element access
@@ -177,14 +183,14 @@ prop_adjust :: Blind (Int -> Int) -> [Int] -> Bool
 prop_adjust (Blind f) xs =
   and [(l ++ f e : r) == toList (check (adjust f i q)) |
        i <- [0 .. length q - 1],
-       let (l, e : r) = splitAt i xs]
+       let (l, e : r) = P.splitAt i xs]
   where q = fromList xs
 
 prop_update :: [Int] -> Int -> Bool
 prop_update xs v =
   and [(l ++ v : r) == toList (check (update i v q)) |
        i <- [0 .. length q - 1],
-       let (l, e : r) = splitAt i xs]
+       let (l, e : r) = P.splitAt i xs]
   where q = fromList xs
 
 ------------------------------------------------------------
@@ -238,7 +244,8 @@ tests =
       testProperty "append" prop_append,
       testProperty "appends" prop_concat_fold2,
       testProperty "take" prop_take,
-      testProperty "drop" prop_drop
+      testProperty "drop" prop_drop,
+      testProperty "splitAt" prop_splitAt
     ],
     testGroup "Element access" [
       testProperty "index" prop_index,

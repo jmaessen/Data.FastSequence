@@ -4,17 +4,18 @@ module Data.FastSequence(
     empty, singleton, (|>), (<|), fromList, toList, null, length,
     head, tail, init, last, ViewL(..), viewl, ViewR(..), viewr,
     reverse, tails, inits, (><),
-    index, adjust, update, take, drop,
+    index, adjust, update, take, drop, splitAt,
     pretty, pp, check
     ) where
-import Prelude hiding ( null, reverse, length, head, tail, init, last, take, drop, foldr )
+import Prelude hiding ( null, reverse, length, head, tail,
+                        init, last, take, drop, splitAt, foldr )
 import qualified Prelude as P
 import Data.List(foldl')
 import Data.Foldable(Foldable(..))
 import Data.Traversable(Traversable(..))
 import Data.Typeable(Typeable1(..))
-import qualified Data.Vector as N
-import Debug.Trace(trace)
+import Data.VectorNode hiding ((!))
+import qualified Data.VectorNode as N
 
 infixr 5 ><
 infixr 5 <|, :<
@@ -25,12 +26,6 @@ newtype Seq a = Seq { unSeq :: FTree (Elem a) }
 
 instance (Show a) => Show (Seq a) where
   showsPrec p (Seq s) = showsPrec p s  -- Temporary, for debugging.
-
--- Breadth describes the width of a tree node.
-type Breadth = Int
-
-data Node a = Node { nodeSize :: !Size, datum :: !(N.Vector a) }
-  deriving (Eq, Functor, Foldable, Traversable)
 
 instance (Show a) => Show (Node a) where
   show = showN
@@ -46,31 +41,6 @@ instance (Show a) => Show (FTree a) where
 ------------------------------------------------------------
 -- * Sized objects
 
--- Size describes the count of items in a sequence.
-type Size = Int
-
--- For a while we weren't using Sized here, but were passing a size
--- function instead.  But local dictionary specialization ought to
--- apply if we use the type class, making that far more efficient
--- after inlining.
-newtype Elem a = Elem { unElem :: a }
-  deriving (Eq, Ord, Functor, Foldable, Traversable)
-
-instance Show a => Show (Elem a) where
-  showsPrec p (Elem e) = showsPrec p e  -- Don't show the wrappers.
-
-class Sized a where
-  size :: a -> Size
-  sizeN :: N.Vector a -> Size
-  sizeN = N.foldl' (\s a -> s + size a) 0
-
-instance Sized (Elem a) where
-  size _ = 1
-  sizeN = N.length
-
-instance Sized (Node a) where
-  size = nodeSize
-
 instance Sized (FTree a) where
   size (Simple m) = size m
   size (Root s _ _ _) = s
@@ -85,71 +55,6 @@ instance (Eq a) => Eq (Seq a) where
 instance (Ord a) => Ord (Seq a) where
   -- Also quite naive
   compare s1 s2 = compare (toList s1) (toList s2)
-
-------------------------------------------------------------
--- Some internals.  First, node manipulation.
-
-node :: (Sized a) => N.Vector a -> Node a
-node n = Node (sizeN n) n
-
--- Symmetric 0-copy split
-splitNode :: N.Vector a -> Breadth -> (N.Vector a, N.Vector a)
-splitNode n b = (N.take b n, N.drop b n)
-
--- Split for R, counting from left, copying left
-splitRNode :: (Sized a) => Node a -> Breadth -> (Node a, Node a)
-splitRNode (Node s n) b =
-  case splitNode n b of
-    (d, r) -> (node (N.force d), node r)
-
--- Split for L, counting from right, copying right
-splitLNode :: (Sized a) => Node a -> Breadth -> (Node a, Node a)
-splitLNode (Node s n) b =
-  case splitNode n (N.length n - b) of
-    (l, d) -> (node l, node (N.force d))
-
-forceN :: Node a -> Node a
-forceN (Node s n) = Node s (N.force n)
-
-consN :: (Sized a) => a -> Node a -> Node a
-consN a (Node s n) = Node (size a + s) (N.cons a n)
-
-snocN :: (Sized a) => Node a -> a -> Node a
-snocN (Node s n) a = Node (size a + s) (N.snoc n a)
-
-breadth :: Node a -> Breadth
-breadth (Node _ n) = N.length n
-
-headN :: Node a -> a
-headN (Node _ n) = N.head n
-
-tailN :: (Sized a) => Node a -> Node a
-tailN (Node s n) = Node (s - size (N.head n)) (N.force (N.tail n))
-
-lastN :: Node a -> a
-lastN (Node _ n) = N.last n
-
-initN :: (Sized a) => Node a -> Node a
-initN (Node s n) = Node (s - size (N.last n)) (N.force (N.init n))
-
-appN :: Node a -> Node a -> Node a
-appN (Node s1 n1) (Node s2 n2) = Node (s1+s2) (n1 N.++ n2)
-
-nullN :: Node a -> Bool
-nullN (Node s _) = s == 0
-
-foldlN' :: (r -> a -> r) -> r -> Node a -> r
-foldlN' f z (Node _ n) = N.foldl' f z n
-
-reverseN :: Node a -> Node a
-reverseN (Node s n) = Node s (N.reverse n)
-
-fromListN :: (Sized a) => [a] -> Node a
-fromListN xs = node (N.fromList xs)
-
-{-# INLINE adjustN #-}
-adjustN :: (a -> a) -> Breadth -> Node a -> Node a
-adjustN f i (Node s v) = Node s (v N.// [(i, f (v N.! i))])
 
 ------------------------------------------------------------
 -- Now a constructor for root
@@ -172,13 +77,13 @@ maxSimple :: Breadth
 maxSimple = 15
 
 emptyTree :: FTree a
-emptyTree = Simple (Node 0 N.empty)
+emptyTree = Simple emptyN
 
 empty :: Seq a
 empty = Seq emptyTree
 
 singleton :: a -> Seq a
-singleton = Seq . Simple . Node 1 . N.singleton . Elem
+singleton = Seq . Simple . singletonN . Elem
 
 (<|) :: a -> Seq a -> Seq a
 a <| Seq sq = Seq (cons (Elem a) sq)
@@ -354,7 +259,7 @@ last (Seq (Root s l d r)) = unElem (lastN r)
 
 index :: (Show a) => Seq a -> Size -> a
 index !m i | i < 0 = indexErr
-index (Seq (Simple m)) i | i < size m = unElem (datum m N.! i)
+index (Seq (Simple m)) i | i < size m = unElem (m N.! i)
 index (Seq t@(Root s l d r)) i | i < s = unElem (snd (index' t i))
 index _ _ = indexErr
 
@@ -380,11 +285,11 @@ index' (Root s l d r) i
 -- result we return the residual index, so the caller can
 -- index into the result if necessary.
 indexN :: (Sized a) => Size ->  Node a -> (Size, a)
-indexN i n@(Node s v) = loop 0 i
+indexN i !n = loop 0 i
   where loop position i
           | i < se = (i, e)
           | otherwise = loop (position + 1) (i - se)
-          where e = v N.! position
+          where e = n N.! position
                 se = size e
 
 adjust :: (a -> a) -> Size -> Seq a -> Seq a
@@ -411,11 +316,11 @@ adjust' f i (Root s l d r)
         sld = sl + size d
 
 adjustN' :: (Sized a) => (Size -> a -> a) -> Size -> Node a -> Node a
-adjustN' f i0 n@(Node s v) = loop 0 i0
+adjustN' f i0 !n = loop 0 i0
   where loop position i
           | i < se = adjustN (f i) position n
           | otherwise = loop (position + 1) (i - se)
-          where e = v N.! position
+          where e = n N.! position
                 se = size e
 
 update :: Size -> a -> Seq a -> Seq a
@@ -425,10 +330,17 @@ update i v m = adjust (const v) i m
 updateErr :: a
 updateErr = error "FastSequence.update: index out of bounds"
 
+------------------------------------------------------------
+-- * Take, drop, and splitAt
+-- These have similar recursive structure.  We choose to implement them
+-- by returning nested sequence upwards, rather than passing down a
+-- a continuation (so, more like index rather than adjust/update).
+
 take :: Size -> Seq a -> Seq a
 take i !sq | i <= 0 = empty
-take i sq@(Seq (Simple (Node s v)))
-  | i < s = Seq (Simple (Node i (N.take i v)))
+take i sq@(Seq (Simple n))
+  | i < s = Seq (Simple (takeN i i n))
+  where s = size n
 take i sq@(Seq t@(Root s l d r))
   | i < s =
     case take' i t of
@@ -456,17 +368,18 @@ midSimple :: (a, Node b, c) -> (a, FTree b, c)
 midSimple (a, m, c) = (a, Simple m, c)
 
 takeN' :: Sized a => Size -> Node a -> (Size, Node a, a)
-takeN' i0 n@(Node s v) = loop 0 i0
+takeN' i0 !n = loop 0 i0
   where loop position i
-          | i < se = (i, Node (i0 - i) (N.take position v), e)
+          | i < se = (i, takeN (i0 - i) position n, e)
           | otherwise = loop (position + 1) (i - se)
-          where e = v N.! position
+          where e = n N.! position
                 se = size e
 
 drop :: Size -> Seq a -> Seq a
 drop i sq | i <= 0 = sq
-drop i sq@(Seq (Simple (Node s v)))
-  | i < s = Seq (Simple (Node (s - i) (N.drop i v)))
+drop i sq@(Seq (Simple n))
+  | i < s = Seq (Simple (dropN (s - i) i n))
+  where s = size n
 drop i sq@(Seq t@(Root s l d r))
   | i < s =
     case drop' i t of
@@ -492,16 +405,65 @@ drop' i (Root s l d r)
         sld = sl + size d
 
 dropN' :: Sized a => Size -> Node a -> (Size, Node a, a)
-dropN' i0 n@(Node s v) = loop 0 i0
+dropN' i0 !n = loop 0 i0
   where loop position i
-          | i < se = (i, Node (s - i0 + i - se) (N.drop (position + 1) v), e)
+          | i < se = (i, dropN (s - i0 + i - se) (position + 1) n, e)
           | otherwise = loop (position + 1) (i - se)
-          where e = v N.! position
+          where e = n N.! position
                 se = size e
+                s = size n
 
-{-
+-- splitAt is non-strict in its pair result, but both elements
+-- are argument-strict.
 splitAt :: Size -> Seq a -> (Seq a, Seq a)
--}
+splitAt i sq = (a, b)
+  where (a, b) = splitAt0 i sq
+
+-- splitAt0 is strict
+splitAt0 :: Size -> Seq a -> (Seq a, Seq a)
+splitAt0 i !sq | i <= 0 = (empty, sq)
+splitAt0 i sq@(Seq (Simple n))
+  | i < s = (Seq (Simple (takeN i i n)),
+             Seq (Simple (dropN (s - i) i n)))
+  where s = size n
+splitAt0 i sq@(Seq t@(Root s l d r))
+  | i < s =
+    case splitAt' i t of
+      (_, r, m, l) -> (Seq r, Seq (cons m l))
+splitAt0 i sq = (sq, empty)
+
+-- Result is (remaining elements to split, head without those elements,
+-- middle element from which elements may possibly be split,
+-- tail without those elements).
+splitAt' :: (Sized a) => Size -> FTree a -> (Size, FTree a, a, FTree a)
+splitAt' i (Simple m) =
+  case splitAtN' i m of
+    (i', r, m, l) -> (i', Simple r, m, Simple l)
+splitAt' i (Root s l d r)
+  | i < sl =
+    case splitAtN' i l of
+      (i', r', m, l') -> (i', Simple r', m, rootL (s - i + i' - size m) l' d r)
+  | i < sld =
+    case splitAt' (i - sl) d of
+      (i1, dl, m1, dr) ->
+        case splitAtN' i1 m1 of
+          (i2, r2, m2, l2) ->
+            (i2, rootR (i - i2) l dl r2, m2, rootL (s - (i - i2) - size m2) l2 dr r)
+  | otherwise =
+    case splitAtN' (i - sld) r of
+      (i', r', m, l') -> (i', rootR (i - i') l d r', m, Simple l')
+  where sl = size l
+        sld = sl + size d
+
+splitAtN' :: Sized a => Size -> Node a -> (Size, Node a, a, Node a)
+splitAtN' i0 !n = loop 0 i0
+  where loop position i
+          | i < se = (i, takeN (i0 - i) position n, e,
+                         dropN (s - (i0 - i) - se) (position + 1) n)
+          | otherwise = loop (position + 1) (i - se)
+          where e = n N.! position
+                se = size e
+                s = size n
 
 ------------------------------------------------------------
 -- * List-like utilities
@@ -580,11 +542,12 @@ prettyr :: Show a => (a -> String) -> FTree a -> String
 prettyr f t = "(" ++ prettyf (showNInner f) t ++ ")"
 
 showN :: (Show a) => Node a -> String
-showN (Node s n) = "<" ++ show s ++ ">" ++ show (N.toList n)
+showN n = "<" ++ show (size n) ++ ">" ++ show (toListN n)
 
 showNInner :: (a -> String) -> Node a -> String
-showNInner f (Node n s) =
-  "<" ++ show n ++ ">[" ++ P.drop 1 (N.foldr (\d r -> "," ++ f d ++ r) "" s) ++ "]"
+showNInner f n =
+  "<" ++ show (size n) ++ ">[" ++
+  P.drop 1 (P.foldr (\d r -> "," ++ f d ++ r) "" (toListN n)) ++ "]"
 
 prettyf :: Show a => (Node a -> String) -> FTree a -> String
 prettyf f (Simple m) = "S " ++ f m

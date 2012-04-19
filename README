@@ -1,7 +1,8 @@
-This library is designed to be a drop-in replacement for the
-Haskell Data.Sequence library documented here:
+This library is designed to be a drop-in replacement for the Haskell
+Data.Sequence library from the containers package, originally written
+by Ross Patterson and Ralf Hinze and documented here:
 
-http://www.haskell.org/ghc/docs/latest/html/libraries/containers/Data-Sequence.html
+http://hackage.haskell.org/packages/archive/containers/0.4.2.1/doc/html/Data-Sequence.html
 
 Like Data.Sequence, Data.FastSequence makes use of finger trees in
 order to provide O(lg n) concatenation and indexing.  However, it uses

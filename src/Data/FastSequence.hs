@@ -5,16 +5,18 @@ module Data.FastSequence(
     head, tail, init, last, ViewL(..), viewl, ViewR(..), viewr,
     reverse, tails, inits, (><),
     index, adjust, update, take, drop, splitAt,
+    replicate, -- replicateA, replicateM
     pretty, pp, check
     ) where
 import Prelude hiding ( null, reverse, length, head, tail,
-                        init, last, take, drop, splitAt, foldr )
+                        init, last, take, drop, splitAt, foldr,
+                        replicate )
 import qualified Prelude as P
 import Data.List(foldl')
-import Data.Foldable(Foldable(..))
+import Data.Foldable(Foldable(..), toList)
 import Data.Traversable(Traversable(..))
 import Data.Typeable(Typeable1(..))
-import Data.VectorNode hiding ((!))
+import Data.VectorNode(Size(..), Breadth(..), Elem(..), Sized(..), Node, (!))
 import qualified Data.VectorNode as N
 
 infixr 5 ><
@@ -31,8 +33,8 @@ instance (Show a) => Show (Node a) where
   show = showN
 
 data FTree a =
-    Simple !(Node a)
-  | Root !Size !(Node a) (FTree (Node a)) !(Node a)
+    Simple {-# UNPACK #-} !(Node a)
+  | Root {-# UNPACK #-} !Size {-# UNPACK #-} !(Node a) (FTree (Node a)) {-# UNPACK #-} !(Node a)
   deriving (Foldable, Traversable)
 
 instance (Show a) => Show (FTree a) where
@@ -77,100 +79,100 @@ maxSimple :: Breadth
 maxSimple = 15
 
 emptyTree :: FTree a
-emptyTree = Simple emptyN
+emptyTree = Simple N.empty
 
 empty :: Seq a
 empty = Seq emptyTree
 
 singleton :: a -> Seq a
-singleton = Seq . Simple . singletonN . Elem
+singleton = Seq . Simple . N.singleton . Elem
 
 (<|) :: a -> Seq a -> Seq a
 a <| Seq sq = Seq (cons (Elem a) sq)
 
 cons :: (Sized a) => a -> FTree a -> FTree a
 cons a (Simple m)
-  | breadth m < maxSimple = Simple (consN a m)
+  | N.breadth m < maxSimple = Simple (N.cons a m)
   | otherwise =
-    case splitLNode m maxInner of
-      (l, r) -> Root (size a + size m) (consN a l) emptyTree r
+    case N.splitL m maxInner of
+      (l, r) -> Root (size a + size m) (N.cons a l) emptyTree r
 cons a (Root s l d r)
-  | breadth l < maxFringe = Root (size a + s) (consN a l) d r
+  | N.breadth l < maxFringe = Root (size a + s) (N.cons a l) d r
   | otherwise =
-    case splitLNode l maxInner of
-      (l', d') -> Root (size a + s) (consN a l') (cons d' d) r
+    case N.splitL l maxInner of
+      (l', d') -> Root (size a + s) (N.cons a l') (cons d' d) r
 
 (|>) :: Seq a -> a -> Seq a
 Seq sq |> a = Seq (snoc sq (Elem a))
 
 snoc :: (Sized a) => FTree a -> a -> FTree a
 snoc (Simple m) b
-  | breadth m < maxSimple = Simple (snocN m b)
+  | N.breadth m < maxSimple = Simple (N.snoc m b)
   | otherwise =
-    case splitRNode m maxInner of
-      (l, r) -> Root (size b + size m) l emptyTree (snocN r b)
+    case N.splitR m maxInner of
+      (l, r) -> Root (size b + size m) l emptyTree (N.snoc r b)
 snoc (Root s l d r) b
-  | breadth r < maxFringe = Root (size b + s) l d (snocN r b)
+  | N.breadth r < maxFringe = Root (size b + s) l d (N.snoc r b)
   | otherwise =
-    case splitRNode r maxInner of
-      (d', r') -> Root (size b + s) l (snoc d d') (snocN r' b)
+    case N.splitR r maxInner of
+      (d', r') -> Root (size b + s) l (snoc d d') (N.snoc r' b)
 
 (><) :: Seq a -> Seq a -> Seq a
 Seq sq1 >< Seq sq2 = Seq (append sq1 sq2)
 
 append :: (Sized a) => FTree a -> FTree a -> FTree a
 append (Simple m1) (Simple m2)
-  | breadth m1 == 0 = Simple m2
-  | breadth m2 == 0 = Simple m1
-  | otherwise = simple (appN m1 m2)
+  | N.breadth m1 == 0 = Simple m2
+  | N.breadth m2 == 0 = Simple m1
+  | otherwise = simple (N.append m1 m2)
 append (Simple m) (Root s l d r)
-  | breadth m == 0 = Root s l d r
-  | otherwise = midL (s + size m) (appN m l) d r
+  | N.breadth m == 0 = Root s l d r
+  | otherwise = midL (s + size m) (N.append m l) d r
 append (Root s l d r) (Simple m)
-  | breadth m == 0 = Root s l d r
-  | otherwise = midR (s + size m) l d (appN r m)
+  | N.breadth m == 0 = Root s l d r
+  | otherwise = midR (s + size m) l d (N.append r m)
 append (Root sl ll dl rl) (Root sr lr dr rr) =
-  Root (sl + sr) ll (append dl (mid (appN rl lr) dr)) rr
+  Root (sl + sr) ll (append dl (mid (N.append rl lr) dr)) rr
 
 -- midL builds a root from a too-big left Node a, where the root has a left
 -- Node a of size at most maxFringe
 midL :: (Sized a) => Size -> Node a -> FTree (Node a) -> Node a -> FTree a
 midL s l d r
-  | b <= maxFringe = Root s (forceN l) d r
+  | b <= maxFringe = Root s (N.force l) d r
   | otherwise =
-    case splitLNode l (((b + 1) `quot` 2) `min` maxInner) of
+    case N.splitL l (((b + 1) `quot` 2) `min` maxInner) of
       (ll, lr) -> midL s ll (cons lr d) r
-  where b = breadth l
+  where b = N.breadth l
 
 -- mid is midL that pushes everything into "d"
 mid :: (Sized a) => Node a -> FTree (Node a) -> FTree (Node a)
 mid l d
-  | b <= maxInner = cons (forceN l) d
+  | b <= maxInner = cons (N.force l) d
   | otherwise =
-    case splitLNode l (((b + 1) `quot` 2) `min` maxInner) of
+    case N.splitL l (((b + 1) `quot` 2) `min` maxInner) of
       (ll, lr) -> mid ll (cons lr d)
-  where b = breadth l
+  where b = N.breadth l
 
 -- midR pastes FTree (Node a) onto a too-big (Node a)
 midR :: (Sized a) => Size -> Node a -> FTree (Node a) -> Node a -> FTree a
 midR s l d r
-  | b <= maxFringe = Root s l d (forceN r)
+  | b <= maxFringe = Root s l d (N.force r)
   | otherwise =
-    case splitRNode r (((b+1) `quot` 2) `min` maxInner) of
+    case N.splitR r (((b+1) `quot` 2) `min` maxInner) of
       (rl, rr) -> midR s l (snoc d rl) rr
-  where b = breadth r
+  where b = N.breadth r
 
 -- A meta-constructor for possibly-too-big Nodes
 simple :: (Sized a) => Node a -> FTree a
 simple m
   | b <= maxSimple = Simple m
   | otherwise =
-    case splitRNode m (((b+1) `quot` 2) `min` maxInner) of
+    case N.splitR m (((b+1) `quot` 2) `min` maxInner) of
       (l, r) -> midR (size m) l emptyTree r
-  where b = breadth m
+  where b = N.breadth m
 
 null :: Seq a -> Bool
-null (Seq (Simple m)) = nullN m
+null (Seq (Simple m)) = N.null m
 null _ = False
 
 length :: Seq a -> Size
@@ -190,25 +192,25 @@ viewl (Seq s) =
 
 viewl' :: (Sized a) => FTree a -> TreeView a
 viewl' (Simple m)
-  | nullN m = Empty
-  | otherwise = View (headN m) (Simple (tailN m))
-viewl' (Root s l d r) = View hn (rootL (s - size hn) (tailN l) d r)
-  where hn = headN l
+  | N.null m = Empty
+  | otherwise = View (N.head m) (Simple (N.tail m))
+viewl' (Root s l d r) = View hn (rootL (s - size hn) (N.tail l) d r)
+  where hn = N.head l
 
 -- Create a Root node with a potentially undersized l
 rootL :: Size -> Node a -> FTree (Node a) -> Node a -> FTree a
 rootL s l d r
-  | breadth l >= minFringe = Root s l d r
+  | N.breadth l >= minFringe = Root s l d r
   | otherwise =
     case viewl' d of
-      View l' d' -> Root s (appN l l') d' r
-      Empty      -> Simple (appN l r)
+      View l' d' -> Root s (N.append l l') d' r
+      Empty      -> Simple (N.append l r)
 
 head :: Seq a -> a
 head (Seq (Simple m))
-  | nullN m   = error "head empty"
-  | otherwise = unElem (headN m)
-head (Seq (Root s l d r)) = unElem (headN l)
+  | N.null m   = error "head empty"
+  | otherwise = unElem (N.head m)
+head (Seq (Root s l d r)) = unElem (N.head l)
 
 tail :: Seq a -> Seq a
 tail t =
@@ -228,19 +230,19 @@ viewr (Seq s) =
 
 viewr' :: (Sized a) => FTree a -> TreeView a
 viewr' (Simple m)
-  | nullN m = Empty
-  | otherwise = View (lastN m) (Simple (initN m))
-viewr' (Root s l d r) = View ln (rootR (s - size ln) l d (initN r))
-  where ln = lastN r
+  | N.null m = Empty
+  | otherwise = View (N.last m) (Simple (N.init m))
+viewr' (Root s l d r) = View ln (rootR (s - size ln) l d (N.init r))
+  where ln = N.last r
 
 -- Create a Root node with a potentially undersized R
 rootR :: Size -> Node a -> FTree (Node a) -> Node a -> FTree a
 rootR s l d r
-  | breadth r >= minFringe = Root s l d r
+  | N.breadth r >= minFringe = Root s l d r
   | otherwise =
     case viewr' d of
-      View r' d' -> Root s l d' (appN r' r)
-      Empty      -> Simple (appN l r)
+      View r' d' -> Root s l d' (N.append r' r)
+      Empty      -> Simple (N.append l r)
 
 init :: Seq a -> Seq a
 init t =
@@ -250,16 +252,16 @@ init t =
 
 last :: Seq a -> a
 last (Seq (Simple m))
-  | nullN m   = error "last empty"
-  | otherwise = unElem (lastN m)
-last (Seq (Root s l d r)) = unElem (lastN r)
+  | N.null m   = error "last empty"
+  | otherwise = unElem (N.last m)
+last (Seq (Root s l d r)) = unElem (N.last r)
 
 ------------------------------------------------------------
 -- * Indexing and indexed operations
 
 index :: (Show a) => Seq a -> Size -> a
 index !m i | i < 0 = indexErr
-index (Seq (Simple m)) i | i < size m = unElem (m N.! i)
+index (Seq (Simple m)) i | i < size m = unElem (m ! i)
 index (Seq t@(Root s l d r)) i | i < s = unElem (snd (index' t i))
 index _ _ = indexErr
 
@@ -289,13 +291,13 @@ indexN i !n = loop 0 i
   where loop position i
           | i < se = (i, e)
           | otherwise = loop (position + 1) (i - se)
-          where e = n N.! position
+          where e = n ! position
                 se = size e
 
 adjust :: (a -> a) -> Size -> Seq a -> Seq a
 adjust f i !m | i < 0 = adjustErr
 adjust f i (Seq (Simple m))
-  | i < size m = Seq (Simple (adjustN (Elem . f . unElem) i m))
+  | i < size m = Seq (Simple (N.adjust (Elem . f . unElem) i m))
 adjust f i (Seq t@(Root s l d r))
   | i < s = Seq (adjust' (const (Elem . f . unElem)) i t)
 adjust f i m = adjustErr
@@ -318,9 +320,9 @@ adjust' f i (Root s l d r)
 adjustN' :: (Sized a) => (Size -> a -> a) -> Size -> Node a -> Node a
 adjustN' f i0 !n = loop 0 i0
   where loop position i
-          | i < se = adjustN (f i) position n
+          | i < se = N.adjust (f i) position n
           | otherwise = loop (position + 1) (i - se)
-          where e = n N.! position
+          where e = n ! position
                 se = size e
 
 update :: Size -> a -> Seq a -> Seq a
@@ -339,7 +341,7 @@ updateErr = error "FastSequence.update: index out of bounds"
 take :: Size -> Seq a -> Seq a
 take i !sq | i <= 0 = empty
 take i sq@(Seq (Simple n))
-  | i < s = Seq (Simple (takeN i i n))
+  | i < s = Seq (Simple (N.take i i n))
   where s = size n
 take i sq@(Seq t@(Root s l d r))
   | i < s =
@@ -370,15 +372,15 @@ midSimple (a, m, c) = (a, Simple m, c)
 takeN' :: Sized a => Size -> Node a -> (Size, Node a, a)
 takeN' i0 !n = loop 0 i0
   where loop position i
-          | i < se = (i, takeN (i0 - i) position n, e)
+          | i < se = (i, N.take (i0 - i) position n, e)
           | otherwise = loop (position + 1) (i - se)
-          where e = n N.! position
+          where e = n ! position
                 se = size e
 
 drop :: Size -> Seq a -> Seq a
 drop i sq | i <= 0 = sq
 drop i sq@(Seq (Simple n))
-  | i < s = Seq (Simple (dropN (s - i) i n))
+  | i < s = Seq (Simple (N.drop (s - i) i n))
   where s = size n
 drop i sq@(Seq t@(Root s l d r))
   | i < s =
@@ -407,9 +409,9 @@ drop' i (Root s l d r)
 dropN' :: Sized a => Size -> Node a -> (Size, Node a, a)
 dropN' i0 !n = loop 0 i0
   where loop position i
-          | i < se = (i, dropN (s - i0 + i - se) (position + 1) n, e)
+          | i < se = (i, N.drop (s - i0 + i - se) (position + 1) n, e)
           | otherwise = loop (position + 1) (i - se)
-          where e = n N.! position
+          where e = n ! position
                 se = size e
                 s = size n
 
@@ -423,8 +425,8 @@ splitAt i sq = (a, b)
 splitAt0 :: Size -> Seq a -> (Seq a, Seq a)
 splitAt0 i !sq | i <= 0 = (empty, sq)
 splitAt0 i sq@(Seq (Simple n))
-  | i < s = (Seq (Simple (takeN i i n)),
-             Seq (Simple (dropN (s - i) i n)))
+  | i < s = (Seq (Simple (N.take i i n)),
+             Seq (Simple (N.drop (s - i) i n)))
   where s = size n
 splitAt0 i sq@(Seq t@(Root s l d r))
   | i < s =
@@ -458,10 +460,10 @@ splitAt' i (Root s l d r)
 splitAtN' :: Sized a => Size -> Node a -> (Size, Node a, a, Node a)
 splitAtN' i0 !n = loop 0 i0
   where loop position i
-          | i < se = (i, takeN (i0 - i) position n, e,
-                         dropN (s - (i0 - i) - se) (position + 1) n)
+          | i < se = (i, N.take (i0 - i) position n, e,
+                         N.drop (s - (i0 - i) - se) (position + 1) n)
           | otherwise = loop (position + 1) (i - se)
-          where e = n N.! position
+          where e = n ! position
                 se = size e
                 s = size n
 
@@ -469,12 +471,12 @@ splitAtN' i0 !n = loop 0 i0
 -- * List-like utilities
 
 reverse :: Seq a -> Seq a
-reverse = Seq . reversef reverseN . unSeq
+reverse = Seq . reversef N.reverse . unSeq
 
 reversef :: (Node a -> Node a) -> FTree a -> FTree a
 reversef f (Simple m) = Simple (f m)
 reversef f (Root s l d r) = Root s (f r) (reversef f' d) (f l)
-  where f' = fmap f . reverseN
+  where f' = fmap f . N.reverse
 
 tails :: Seq a -> Seq (Seq a)
 tails sq =
@@ -498,9 +500,9 @@ fromListBody :: (Sized a) => [a] -> FTree a
 fromListBody xs
   -- We use a lazy length-checking idiom here, but compute
   -- the length when we discover xs is short.
-  | P.null ss = Simple (fromListN xs)
+  | P.null ss = Simple (N.fromList xs)
   | P.null (P.drop (2 * maxFringe - maxSimple) ss) =
-    root (fromListN l) emptyTree (fromListN r)
+    root (N.fromList l) emptyTree (N.fromList r)
   | otherwise = root lf d lr
   where b = P.length xs
         ss = P.drop maxSimple xs
@@ -513,14 +515,42 @@ nests [] = []
 nests xs =
   case P.splitAt maxInner xs of
     (nd, xs')
-      | P.null xs' -> [fromListN nd]
+      | P.null xs' -> [N.fromList nd]
       | P.null (P.drop (minInner-1) xs') ->
          case P.splitAt (P.length xs - minInner) xs of
-           (l,r) -> [fromListN l, fromListN r]
-      | otherwise -> fromListN nd : nests xs'
+           (l,r) -> [N.fromList l, N.fromList r]
+      | otherwise -> N.fromList nd : nests xs'
 
-toList :: Seq a -> [a]
-toList = foldr (:) []
+------------------------------------------------------------
+-- * Replication, with and without effects.
+
+replicate :: Size -> a -> Seq a
+replicate n a = Seq $ replicate' n 1 (Elem a)
+
+replicate' :: (Sized a) => Size -> Size -> a -> FTree a
+replicate' n size_t t
+  | n <= maxSimple = Simple (N.replicate sz n t)
+  | even sides = Root sz left mid left
+  | otherwise = Root sz left mid right
+  where sz = n * size_t
+        (q,r) = n `quotRem` maxInner
+        deepSize = maxInner * size_t
+        deep = N.replicate deepSize maxInner t
+        sides = r + 2 * maxInner
+        half = sides `quot` 2
+        rest = sides - half
+        left = N.replicate (half * size_t) half t
+        right = N.replicate (rest * size_t) rest t
+        mid = replicate' (q-2) deepSize deep
+
+-- TODO: replicateA and replicateM
+
+------------------------------------------------------------
+-- * Iterative construction
+
+-- Do this in terms of list for now, as batched creation is well
+-- handled in fromList and handed creation seems like it won't gain --
+-- much -- from writing out longhand.
 
 ------------------------------------------------------------
 -- * Functor
@@ -542,12 +572,12 @@ prettyr :: Show a => (a -> String) -> FTree a -> String
 prettyr f t = "(" ++ prettyf (showNInner f) t ++ ")"
 
 showN :: (Show a) => Node a -> String
-showN n = "<" ++ show (size n) ++ ">" ++ show (toListN n)
+showN n = "<" ++ show (size n) ++ ">" ++ show (N.toList n)
 
 showNInner :: (a -> String) -> Node a -> String
 showNInner f n =
   "<" ++ show (size n) ++ ">[" ++
-  P.drop 1 (P.foldr (\d r -> "," ++ f d ++ r) "" (toListN n)) ++ "]"
+  P.drop 1 (P.foldr (\d r -> "," ++ f d ++ r) "" (N.toList n)) ++ "]"
 
 prettyf :: Show a => (Node a -> String) -> FTree a -> String
 prettyf f (Simple m) = "S " ++ f m
@@ -560,7 +590,7 @@ pp = putStrLn . pretty
 ------------------------------------------------------------
 -- Invariant checker.  Passes through the value if OK, otherwise calls error.
 naiveSizeof :: (a -> Size) -> (Node a -> Size)
-naiveSizeof computeSize m = foldlN' (\a v -> a + computeSize v) 0 m
+naiveSizeof computeSize m = N.foldl' (\a v -> a + computeSize v) 0 m
 
 check :: (Show a) => Seq a -> Seq a
 check (Seq a)
@@ -583,8 +613,8 @@ ok computeSize pr n@(Root s l d r)
 
 okN :: (a -> Size) -> (Node a -> String) -> Size -> Size -> Node a -> Maybe String
 okN computeSize pr mn mx m
-  | breadth m > mx = Just ("Node too big: " ++ pr m)
-  | breadth m < mn = Just ("Node too small: " ++ pr m)
+  | N.breadth m > mx = Just ("Node too big: " ++ pr m)
+  | N.breadth m < mn = Just ("Node too small: " ++ pr m)
   | computedSize /= size m =
     Just ("Computed size " ++ show computedSize ++ " different: " ++ pr m)
   | otherwise = Nothing

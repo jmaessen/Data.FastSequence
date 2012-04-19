@@ -3,9 +3,10 @@
 -- | Tests for Data.FastSequence.  We test functions by comparing them to their list
 -- equivalents.
 
-module Data.FastSequenceTest(main) where
+module Main(main) where
 
-import Prelude hiding ( null, reverse, length, head, tail, init, last, take, drop, splitAt )
+import Prelude hiding ( null, reverse, length, head, tail, init, last, take, drop, splitAt,
+                        replicate )
 import qualified Prelude as P
 import qualified Data.List as L
 import Data.FastSequence
@@ -194,6 +195,22 @@ prop_update xs v =
   where q = fromList xs
 
 ------------------------------------------------------------
+-- * Replication
+
+prop_replicate :: [()] -> Bool
+prop_replicate xs =
+  toList r == xs && length (check r) == n
+  where n = P.length xs
+        r = replicate n ()
+
+-- TODO: replicateA and replicateM
+
+------------------------------------------------------------
+-- * Iterative construction
+
+
+
+------------------------------------------------------------
 -- * All tests.
 -- | Frustratingly, if you forget one, you lose.
 
@@ -251,6 +268,9 @@ tests =
       testProperty "index" prop_index,
       testProperty "adjust" prop_adjust,
       testProperty "update" prop_update
+    ],
+    testGroup "replication" [
+      testProperty "replicate" prop_replicate
     ]
   ]
 

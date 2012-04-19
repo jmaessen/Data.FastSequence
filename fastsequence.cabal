@@ -2,7 +2,7 @@
 -- additional options, see
 -- http://www.haskell.org/cabal/release/cabal-latest/doc/users-guide/authors.html#pkg-descr.
 -- The name of the package.
-Name:                Data.FastSequence
+Name:                fastsequence
 
 -- The package version. See the Haskell package versioning policy
 -- (http://www.haskell.org/haskellwiki/Package_versioning_policy) for
@@ -13,9 +13,7 @@ Version:             0.1
 Synopsis:            A replacement for Data.Sequence that uses wide-fanout finger trees
 
 -- A longer description of the package.
--- Description:      This library is designed to be a drop-in replacement for the Haskell Data.Sequence library documented at http://www.haskell.org/ghc/docs/latest/html/libraries/containers/Data-Sequence.html.  Like Data.Sequence, Data.FastSequence makes use of finger trees in order to provide O(lg n) concatenation and indexing.  However, it uses much wider vector-style nodes rather than the 2-3 tree nodes used in Data.Sequence.  It is intended to run faster in practice than Data.Sequence; substantial performance regressions should be
-considered a bug.  For now, though, the code is still under development and testing.
-
+Description:         This library is designed to be a drop-in replacement for the Haskell Data.Sequence library from the containers package, originally written by Ross Patterson and Ralf Hinze and documented at http://hackage.haskell.org/packages/archive/containers/0.4.2.1/doc/html/Data-Sequence.html.  Like Data.Sequence, Data.FastSequence makes use of finger trees in order to provide O(lg n) concatenation and indexing.  However, it uses much wider vector-style nodes rather than the 2-3 tree nodes used in Data.Sequence.  It is intended to run faster in practice than Data.Sequence; substantial performance regressions should be considered a bug.  For now, though, the code is still under development and testing.
 
 -- URL for the project homepage or repository.
 Homepage:            https://github.com/jmaessen/Data.FastSequence
@@ -50,14 +48,13 @@ Cabal-version:       >=1.2
 
 Library
   -- Modules exported by the library.
-  Exposed-modules:     Data.FastSequence, Data.FastSequenceTest
-  
-  -- Packages needed in order to build this package.
-  -- Build-depends:       
-  
-  -- Modules not exported by this package.
-  -- Other-modules:       
-  
-  -- Extra tools (e.g. alex, hsc2hs, ...) needed to build the source.
-  -- Build-tools:         
-  
+  Exposed-modules:     Data.FastSequence
+  Other-modules:       Data.VectorNode
+  build-depends:       base, vector
+  hs-source-dirs:      src
+
+test-suite FastSequenceTest
+  type:                exitcode-stdio-1.0
+  main-is:             FastSequenceTest.hs
+  build-depends:       base, vector, QuickCheck, test-framework, test-framework-quickcheck2
+  hs-source-dirs:      src test

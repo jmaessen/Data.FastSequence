@@ -1,22 +1,21 @@
 {-# LANGUAGE BangPatterns, GeneralizedNewtypeDeriving, PatternGuards,
              DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 module Data.FastSequence(
-    empty, singleton, (|>), (<|), fromList, toList, null, length,
+    empty, singleton, (|>), (<|), fromList, reverseFromList, toList, null, length,
     head, tail, init, last, ViewL(..), viewl, ViewR(..), viewr,
     reverse, tails, inits, (><),
     index, adjust, update, take, drop, splitAt,
-    replicate, -- replicateA, replicateM
+    replicate, replicateA, replicateM,
     pretty, pp, check
     ) where
 import Prelude hiding ( null, reverse, length, head, tail,
                         init, last, take, drop, splitAt, foldr,
                         replicate )
 import qualified Prelude as P
-import Data.List(foldl')
+import Control.Applicative(Applicative, (<$>), (<*>), WrappedMonad(WrapMonad), unwrapMonad)
 import Data.Foldable(Foldable(..), toList)
 import Data.Traversable(Traversable(..))
-import Data.Typeable(Typeable1(..))
-import Data.VectorNode(Size(..), Breadth(..), Elem(..), Sized(..), Node, (!))
+import Data.VectorNode(Size, Breadth, Elem(..), Sized(..), Node, (!))
 import qualified Data.VectorNode as N
 
 infixr 5 ><
@@ -29,6 +28,7 @@ newtype Seq a = Seq { unSeq :: FTree (Elem a) }
 instance (Show a) => Show (Seq a) where
   showsPrec p (Seq s) = showsPrec p s  -- Temporary, for debugging.
 
+-- Orphan, but only used for pretty printing anyhow.
 instance (Show a) => Show (Node a) where
   show = showN
 
@@ -287,7 +287,7 @@ index' (Root s l d r) i
 -- result we return the residual index, so the caller can
 -- index into the result if necessary.
 indexN :: (Sized a) => Size ->  Node a -> (Size, a)
-indexN i !n = loop 0 i
+indexN i0 !n = loop 0 i0
   where loop position i
           | i < se = (i, e)
           | otherwise = loop (position + 1) (i - se)
@@ -343,7 +343,7 @@ take i !sq | i <= 0 = empty
 take i sq@(Seq (Simple n))
   | i < s = Seq (Simple (N.take i i n))
   where s = size n
-take i sq@(Seq t@(Root s l d r))
+take i sq@(Seq t@(Root s _ _ _))
   | i < s =
     case take' i t of
       (_, r, _) -> Seq r
@@ -362,7 +362,7 @@ take' i (Root s l d r)
           (i2, r2, u) -> (i2, rootR (i - i2) l d1 r2, u)
   | otherwise =
     case takeN' (i - sld) r of
-      (i', r, u) -> (i', rootR (i - i') l d r, u)
+      (i', r', u) -> (i', rootR (i - i') l d r', u)
   where sl = size l
         sld = sl + size d
 
@@ -382,7 +382,7 @@ drop i sq | i <= 0 = sq
 drop i sq@(Seq (Simple n))
   | i < s = Seq (Simple (N.drop (s - i) i n))
   where s = size n
-drop i sq@(Seq t@(Root s l d r))
+drop i sq@(Seq t@(Root s _ _ _))
   | i < s =
     case drop' i t of
       (_, r, e) -> Seq (cons e r)
@@ -428,7 +428,7 @@ splitAt0 i sq@(Seq (Simple n))
   | i < s = (Seq (Simple (N.take i i n)),
              Seq (Simple (N.drop (s - i) i n)))
   where s = size n
-splitAt0 i sq@(Seq t@(Root s l d r))
+splitAt0 i sq@(Seq t@(Root s _ _ _))
   | i < s =
     case splitAt' i t of
       (_, r, m, l) -> (Seq r, Seq (cons m l))
@@ -440,7 +440,7 @@ splitAt0 i sq = (sq, empty)
 splitAt' :: (Sized a) => Size -> FTree a -> (Size, FTree a, a, FTree a)
 splitAt' i (Simple m) =
   case splitAtN' i m of
-    (i', r, m, l) -> (i', Simple r, m, Simple l)
+    (i', r, m', l) -> (i', Simple r, m', Simple l)
 splitAt' i (Root s l d r)
   | i < sl =
     case splitAtN' i l of
@@ -521,29 +521,82 @@ nests xs =
            (l,r) -> [N.fromList l, N.fromList r]
       | otherwise -> N.fromList nd : nests xs'
 
+-- ** reversefromList @ == reverse . fromList == fromList . reverse@
+reverseFromList :: [a] -> Seq a
+reverseFromList = Seq . rFromListBody . fmap Elem
+
+rFromListBody :: (Sized a) => [a] -> FTree a
+rFromListBody xs
+  | P.null ss = Simple (N.fromList (P.reverse xs))
+  | P.null (P.drop (2 * maxFringe - maxSimple) ss) =
+    root (N.fromList (P.reverse l)) emptyTree (N.fromList (P.reverse r))
+  | otherwise = root lf d lr
+  where b = P.length xs
+        ss = P.drop maxSimple xs
+        (r, l) = P.splitAt (b `quot` 2) xs
+        (lr : ns) = rNests xs
+        View lf d = viewl' $ rFromListBody ns
+
+rNests :: (Sized a) => [a] -> [Node a]
+rNests [] = []
+rNests xs =
+  case P.splitAt maxInner xs of
+    (nd, xs')
+      | P.null xs' -> [N.fromList (P.reverse nd)]
+      | P.null (P.drop (minInner - 1) xs') ->
+        case P.splitAt (P.length xs - minInner) xs of
+          (l,r) -> [N.fromList (P.reverse l), N.fromList (P.reverse r)]
+      | otherwise -> N.fromList (P.reverse nd) : rNests xs'
+
 ------------------------------------------------------------
 -- * Replication, with and without effects.
 
 replicate :: Size -> a -> Seq a
+replicate n a | n < 0 = error "FastSequence.replicate: negative count"
 replicate n a = Seq $ replicate' n 1 (Elem a)
 
 replicate' :: (Sized a) => Size -> Size -> a -> FTree a
 replicate' n size_t t
   | n <= maxSimple = Simple (N.replicate sz n t)
-  | even sides = Root sz left mid left
-  | otherwise = Root sz left mid right
+  | even sides = Root sz l m l
+  | otherwise = Root sz l m r
   where sz = n * size_t
-        (q,r) = n `quotRem` maxInner
+        (q,rm) = n `quotRem` maxInner
         deepSize = maxInner * size_t
         deep = N.replicate deepSize maxInner t
-        sides = r + 2 * maxInner
+        sides = rm + 2 * maxInner
         half = sides `quot` 2
         rest = sides - half
-        left = N.replicate (half * size_t) half t
-        right = N.replicate (rest * size_t) rest t
-        mid = replicate' (q-2) deepSize deep
+        l = N.replicate (half * size_t) half t
+        r = N.replicate (rest * size_t) rest t
+        m = replicate' (q-2) deepSize deep
 
--- TODO: replicateA and replicateM
+replicateA :: Applicative f => Int -> f a -> f (Seq a)
+replicateA n a | n < 0 = error "FastSequence.replicateA: negative count"
+replicateA n a = Seq <$> (replicateA' n 1 (Elem <$> a))
+
+nReplicateA :: (Sized a, Applicative f) => Size -> Breadth -> f a -> f (Node a)
+nReplicateA _ n ft = N.fromList <$> sequenceA (P.replicate n ft)
+
+replicateA' :: (Sized a, Applicative f) => Size -> Size -> f a -> f (FTree a)
+replicateA' n size_t ft
+  | n <= maxSimple = Simple <$> nReplicateA sz n ft
+  | even sides = Root sz <$> l <*> m <*> l
+  | otherwise  = Root sz <$> l <*> m <*> r
+  where sz = n * size_t
+        (q,rm) = n `quotRem` maxInner
+        deepSize = maxInner * size_t
+        deep = nReplicateA deepSize maxInner ft
+        sides = rm + 2 * maxInner
+        half = sides `quot` 2
+        rest = sides - half
+        l = nReplicateA (half * size_t) half ft
+        r = nReplicateA (half * size_t) rest ft
+        m = replicateA' (q-2) deepSize deep
+
+replicateM :: Monad m => Int -> m a -> m (Seq a)
+replicateM n a = unwrapMonad (replicateA n (WrapMonad a))
+
 
 ------------------------------------------------------------
 -- * Iterative construction

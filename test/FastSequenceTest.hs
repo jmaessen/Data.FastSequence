@@ -9,7 +9,10 @@ import Prelude hiding ( null, reverse, length, head, tail, init, last, take, dro
                         replicate )
 import qualified Prelude as P
 import qualified Data.List as L
+import Control.Monad.Writer.Strict(runWriter, tell)
+import Control.Applicative(WrappedMonad(WrapMonad), unwrapMonad)
 import Data.FastSequence
+import Data.Monoid(Sum(Sum))
 import Test.Framework(Test,defaultMain,testGroup)
 import Test.Framework.Providers.QuickCheck2(testProperty)
 import Test.QuickCheck hiding ((><))
@@ -29,6 +32,10 @@ prop_empty = null empty && P.null (toList empty)
 
 prop_fromList_toList :: [Int] -> Bool
 prop_fromList_toList xs = toList (check $ fromList xs) == xs
+
+prop_reverseFromList_toList :: [Int] -> Bool
+prop_reverseFromList_toList xs =
+  toList (check $ reverseFromList xs) == P.reverse xs
 
 prop_null :: [Int] -> Bool
 prop_null xs = P.null xs == null (fromList xs)
@@ -203,7 +210,18 @@ prop_replicate xs =
   where n = P.length xs
         r = replicate n ()
 
--- TODO: replicateA and replicateM
+prop_replicateA :: [()] -> Bool
+prop_replicateA xs =
+  toList r == xs && length (check r) == n && s == n
+  where n = P.length xs
+        (r, Sum s) = runWriter . unwrapMonad . replicateA n $
+                     WrapMonad (tell (Sum 1))
+
+prop_replicateM :: [()] -> Bool
+prop_replicateM xs =
+  toList r == xs && length (check r) == n && s == n
+  where n = P.length xs
+        (r, Sum s) = runWriter . replicateM n $ tell (Sum 1)
 
 ------------------------------------------------------------
 -- * Iterative construction
@@ -221,6 +239,7 @@ tests =
     testGroup "Empty, toList, fromList" [
       testProperty "empty is null" prop_empty,
       testProperty "fromList/toList" prop_fromList_toList,
+      testProperty "reverseFromList/toList" prop_reverseFromList_toList,
       testProperty "null" prop_null
     ],
     testGroup "Cons and snoc" [
@@ -270,7 +289,9 @@ tests =
       testProperty "update" prop_update
     ],
     testGroup "replication" [
-      testProperty "replicate" prop_replicate
+      testProperty "replicate" prop_replicate,
+      testProperty "replicateA" prop_replicateA,
+      testProperty "replicateM" prop_replicateM
     ]
   ]
 

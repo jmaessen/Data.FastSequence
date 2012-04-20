@@ -1,7 +1,7 @@
 {-# LANGUAGE BangPatterns, GeneralizedNewtypeDeriving, PatternGuards,
              DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 module Data.VectorNode(
-    Elem(..), Breadth(..), Size(..), Sized(..),
+    Elem(..), Breadth, Size, Sized(..),
     Node, empty, singleton,
     splitR, splitL, force, cons, snoc,
     breadth, head, tail, init, last, append, null,

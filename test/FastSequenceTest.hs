@@ -6,7 +6,7 @@
 module Main(main) where
 
 import Prelude hiding ( null, reverse, length, head, tail, init, last, take, drop, splitAt,
-                        replicate )
+                        replicate, scanl, scanl1, scanr, scanr1 )
 import qualified Prelude as P
 import qualified Data.List as L
 import Control.Monad.Writer.Strict(runWriter, tell)
@@ -145,6 +145,10 @@ prop_tails xs = L.tails xs == fmap (toList . check) (toList $ tails $ fromList x
 prop_fmap :: [Int] -> Blind (Int -> Int) -> Bool
 prop_fmap xs (Blind f) = fmap f xs == toList (check (fmap f (fromList xs)))
 
+prop_mapWithIndex :: [Int] -> Blind (Int -> Int -> Int) -> Bool
+prop_mapWithIndex xs (Blind f) =
+  zipWith f [0..] xs == toList (check (mapWithIndex f (fromList xs)))
+
 ------------------------------------------------------------
 -- ** append, index, take, drop
 
@@ -202,7 +206,7 @@ prop_update xs v =
   where q = fromList xs
 
 ------------------------------------------------------------
--- * Replication
+-- ** Replication
 
 prop_replicate :: [()] -> Bool
 prop_replicate xs =
@@ -224,9 +228,41 @@ prop_replicateM xs =
         (r, Sum s) = runWriter . replicateM n $ tell (Sum 1)
 
 ------------------------------------------------------------
--- * Iterative construction
+-- ** Iterative construction
 
+prop_iterateN :: [()] -> Bool
+prop_iterateN xs =
+  toList (check (iterateN n (1+) 1)) == [1..n]
+  where n = P.length xs
 
+prop_unfoldr :: [()] -> Bool
+prop_unfoldr xs =
+  toList (check (unfoldr (\i -> if i==0 then Nothing else Just (i, i-1)) n)) == [1..n]
+  where n = P.length xs
+
+prop_unfoldl :: [()] -> Bool
+prop_unfoldl xs =
+  toList (check (unfoldl (\i -> if i > n then Nothing else Just (i+1, i)) 1)) == [1..n]
+  where n = P.length xs
+
+------------------------------------------------------------
+-- * Scans
+
+prop_scanl :: NonEmptyList Int -> Blind (Int -> Int -> Int) -> Bool
+prop_scanl (NonEmpty (x:xs)) (Blind f) =
+  L.scanl f x xs == toList (check (scanl f x (fromList xs)))
+
+prop_scanl1 :: [Int] -> Blind (Int -> Int -> Int) -> Bool
+prop_scanl1 xs (Blind f) =
+  L.scanl1 f xs == toList (check (scanl1 f (fromList xs)))
+
+prop_scanr :: NonEmptyList Int -> Blind (Int -> Int -> Int) -> Bool
+prop_scanr (NonEmpty (x:xs)) (Blind f) =
+  L.scanr f x xs == toList (check (scanr f x (fromList xs)))
+
+prop_scanr1 :: [Int] -> Blind (Int -> Int -> Int) -> Bool
+prop_scanr1 xs (Blind f) =
+  L.scanr1 f xs == toList (check (scanr1 f (fromList xs)))
 
 ------------------------------------------------------------
 -- * All tests.
@@ -235,7 +271,6 @@ prop_replicateM xs =
 tests :: [Test]
 tests =
   [
-    -- empty & to/from
     testGroup "Empty, toList, fromList" [
       testProperty "empty is null" prop_empty,
       testProperty "fromList/toList" prop_fromList_toList,
@@ -274,7 +309,8 @@ tests =
       testProperty "reverse" prop_reverse,
       testProperty "inits" prop_inits,
       testProperty "tails" prop_tails,
-      testProperty "fmap" prop_fmap
+      testProperty "fmap" prop_fmap,
+      testProperty "mapWithIndex" prop_mapWithIndex
     ],
     testGroup "append, take, drop" [
       testProperty "append" prop_append,
@@ -292,6 +328,17 @@ tests =
       testProperty "replicate" prop_replicate,
       testProperty "replicateA" prop_replicateA,
       testProperty "replicateM" prop_replicateM
+    ],
+    testGroup "Iterative construction" [
+      testProperty "iterateN" prop_iterateN,
+      testProperty "unfoldr" prop_unfoldr,
+      testProperty "unfoldl" prop_unfoldl
+    ],
+    testGroup "Scans" [
+      testProperty "scanl" prop_scanl,
+      testProperty "scanl1" prop_scanl1,
+      testProperty "scanr" prop_scanr,
+      testProperty "scanr1" prop_scanr1
     ]
   ]
 

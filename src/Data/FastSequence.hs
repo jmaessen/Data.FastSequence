@@ -6,15 +6,17 @@ module Data.FastSequence(
     reverse, tails, inits, (><),
     index, adjust, update, take, drop, splitAt,
     replicate, replicateA, replicateM,
+    iterateN, unfoldl, unfoldr,
+    mapWithIndex, scanl, scanl1, scanr, scanr1,
     pretty, pp, check
     ) where
 import Prelude hiding ( null, reverse, length, head, tail,
                         init, last, take, drop, splitAt, foldr,
-                        replicate )
+                        replicate, scanl, scanr, scanl1, scanr1)
 import qualified Prelude as P
 import Control.Applicative(Applicative, (<$>), (<*>), WrappedMonad(WrapMonad), unwrapMonad)
 import Data.Foldable(Foldable(..), toList)
-import Data.Traversable(Traversable(..))
+import Data.Traversable(Traversable(..), mapAccumL, mapAccumR)
 import Data.VectorNode(Size, Breadth, Elem(..), Sized(..), Node, (!))
 import qualified Data.VectorNode as N
 
@@ -597,13 +599,26 @@ replicateA' n size_t ft
 replicateM :: Monad m => Int -> m a -> m (Seq a)
 replicateM n a = unwrapMonad (replicateA n (WrapMonad a))
 
-
 ------------------------------------------------------------
 -- * Iterative construction
 
 -- Do this in terms of list for now, as batched creation is well
 -- handled in fromList and handed creation seems like it won't gain --
 -- much -- from writing out longhand.
+iterateN :: Int -> (a -> a) -> a -> Seq a
+iterateN n f i = fromList (P.take n (iterate f i))
+
+unfoldr :: (b -> Maybe (a,b)) -> b -> Seq a
+unfoldr f i0 = reverseFromList (u i0)
+  where u i = u' (f i)
+        u' Nothing = []
+        u' (Just (a, b)) = a : u b
+
+unfoldl :: (b -> Maybe (b, a)) -> b -> Seq a
+unfoldl f i0 = fromList (u i0)
+  where u i = u' (f i)
+        u' Nothing = []
+        u' (Just (b, a)) = a : u b
 
 ------------------------------------------------------------
 -- * Functor
@@ -613,6 +628,39 @@ instance Functor FTree where
   fmap f (Root s l d r) =
     Root s (fmap f l) (fmap (fmap f) d) (fmap f r)
   -- a <$ s = replicate (size s) a
+
+mapWithIndex :: (Int -> a -> b) -> Seq a -> Seq b
+mapWithIndex f (Seq a) = Seq (snd (mapAccumL f' 0 a))
+  where f' i (Elem e) = i1 `seq` (i1, Elem (f i e))
+          where i1 = i + 1
+
+------------------------------------------------------------
+-- * Scans
+
+-- Just implemented in terms of Traversable for now.
+scanl :: (a -> b -> a) -> a -> Seq b -> Seq a
+scanl f i (Seq s) =
+  Seq (cons (Elem i) (snd (mapAccumL f' i s)))
+  where f' a (Elem e) = fae `seq` (fae, Elem fae)
+          where fae = f a e
+
+scanl1 :: (a -> a -> a) -> Seq a -> Seq a
+scanl1 f s =
+  case viewl s of
+    EmptyL -> s
+    l :< s' -> scanl f l s'
+
+scanr :: (a -> b -> b) -> b -> Seq a -> Seq b
+scanr f i (Seq s) =
+  Seq (snoc (snd (mapAccumR f' i s)) (Elem i))
+  where f' a (Elem e) = fea `seq` (fea, Elem fea)
+          where fea = f e a
+
+scanr1 :: (a -> a -> a) -> Seq a -> Seq a
+scanr1 f s =
+  case viewr s of
+    EmptyR -> s
+    s' :> r -> scanr f r s'
 
 ------------------------------------------------------------
 -- * Pretty printing
